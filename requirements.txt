@@ -1,0 +1,15 @@
+whisperx
+torch
+torchaudio
+pyannote.audio
+transformers
+accelerate
+datasets
+librosa
+soundfile
+fastapi
+python-multipart
+uvicorn
+dotenv
+pydub
+#google-generativeai -- протоколирование через Gemini (Ai studio lab)

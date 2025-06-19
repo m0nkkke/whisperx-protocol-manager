@@ -1,0 +1,55 @@
+body {
+  background-color: #111;
+  color: #d4fcdc;
+  padding: 2rem;
+}
+
+.form-control,
+.form-check-input {
+  background-color: #222;
+  color: #d4fcdc;
+  border-color: #444;
+}
+
+.form-control::placeholder {
+  color: #666;
+}
+
+.btn-success {
+  background-color: #28a745;
+  border-color: #28a745;
+}
+
+.btn-success:hover {
+  background-color: #218838;
+}
+
+.card {
+  background-color: #1c1c1c;
+  border: 1px solid #444;
+  margin-top: 1rem;
+}
+
+.card-header {
+  background-color: #2a2a2a;
+  color: #90ee90;
+}
+
+.progress {
+  height: 25px;
+  margin-top: 1rem;
+}
+
+.progress-bar {
+  background-color: #28a745;
+}
+
+textarea {
+  resize: vertical;
+}
+
+pre {
+  white-space: pre-wrap;
+  color: #e8ffe8;
+  font-family: Consolas, monospace;
+}
