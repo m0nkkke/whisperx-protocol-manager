@@ -6,7 +6,13 @@ from fastapi.staticfiles import StaticFiles
 from pydub import AudioSegment
 
 import whisperx
+import torch
+import torchaudio
+import numpy as np
 from pyannote.audio import Pipeline as PyannotePipeline
+from pyannote.audio import Model, Inference
+from pyannote.core import Segment
+from scipy.spatial.distance import cosine
 import pandas as pd
 import google.generativeai as genai
 from google.api_core.client_options import ClientOptions
@@ -52,6 +58,56 @@ def format_ts(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     return f"{m:02d}:{s:02d}"
 
+def load_reference_embeddings(folder: str, hf_token: str):
+    inference = Inference("pyannote/embedding", use_auth_token=hf_token, window="whole")
+    voices = {}
+    for fname in os.listdir(folder):
+        if not fname.lower().endswith(".wav"):
+            continue
+        path = os.path.join(folder, fname)
+        waveform_np = whisperx.load_audio(path)
+        waveform = torch.tensor(waveform_np).unsqueeze(0)
+        emb_result = inference({"waveform": waveform, "sample_rate": 16000})
+        
+        # гарантированно получить нужный тензор
+        emb_tensor = emb_result["embedding"] if isinstance(emb_result, dict) else emb_result
+        voices[os.path.splitext(fname)[0]] = emb_tensor
+    return voices
+
+
+def to_vector(x):
+    if isinstance(x, dict):
+        if "embedding" in x:
+            x = x["embedding"]
+        else:
+            raise TypeError("Dict embedding missing 'embedding' key")
+    if isinstance(x, torch.Tensor):
+        return x.squeeze().cpu().numpy()
+    elif isinstance(x, np.ndarray):
+        return x.squeeze()
+    else:
+        print("❌ Unsupported type:", type(x), "→ content:", x)
+        raise TypeError("Unsupported embedding type")
+
+
+
+def identify_speaker(embedding, reference_embeddings, threshold=0.75):
+    emb_vector = to_vector(embedding)
+    best_score = float("inf")
+    best_speaker = None
+    for name, ref_emb in reference_embeddings.items():
+        print(f"[🧪 DEBUG] ref_emb type: {type(ref_emb)}")
+        print(f"[🧪 DEBUG] ref_emb content: {ref_emb}")
+        ref_vector = to_vector(ref_emb)
+        score = cosine(emb_vector, ref_vector)
+        if score < best_score:
+            best_score = score
+            best_speaker = name
+    if best_score < threshold:
+        return best_speaker
+    return None
+
+
 def transcribe_and_diarize(
     audio_path: str,
     do_diarize: bool,
@@ -85,7 +141,7 @@ def transcribe_and_diarize(
         device=device,
         compute_type=compute_type,
         asr_options=asr_opts,
-        vad_method="silero",
+        vad_method="pyannote",
         vad_options=vad_opts,
         language=WHISPER_LANGUAGE
     )
@@ -115,10 +171,42 @@ def transcribe_and_diarize(
             }
         })
         diar = pyannote(audio_path, min_speakers=min_speakers, max_speakers=max_speakers)
+
         diar_df = pd.DataFrame([
             {"start": t.start, "end": t.end, "speaker": spk}
             for t, _, spk in diar.itertracks(yield_label=True)
         ])
+        reference_embeddings = load_reference_embeddings("reference_voices", HF_TOKEN)
+        model = Model.from_pretrained("pyannote/embedding", use_auth_token=HF_TOKEN)
+        inference = Inference(model, window="whole")
+
+        # загружаем всё аудио один раз
+        waveform, sample_rate = torchaudio.load(audio_path)
+
+        speaker_map = {}
+        spk_counter = 0
+        MIN_SAMPLES = 16000
+        for t, _, spk in diar.itertracks(yield_label=True):
+            start_sample = int(t.start * sample_rate)
+            end_sample = int(t.end * sample_rate)
+            if end_sample - start_sample < MIN_SAMPLES:
+                print(f"[⚠] Пропущен короткий сегмент {t}")
+                continue
+            segment_audio = waveform[:, start_sample:end_sample].cpu()
+
+            emb_result = inference({'waveform': segment_audio, 'sample_rate': sample_rate})
+            emb_tensor = emb_result["embedding"] if isinstance(emb_result, dict) else emb_result
+
+            known_speaker = identify_speaker(emb_tensor, reference_embeddings)
+
+            if known_speaker:
+                speaker_map[spk] = known_speaker
+            else:
+                if spk not in speaker_map:
+                    speaker_map[spk] = f"SPEAKER_{spk_counter:02d}"
+                    spk_counter += 1
+
+        diar_df["speaker"] = diar_df["speaker"].map(speaker_map)
         segments = whisperx.assign_word_speakers(diar_df, {"segments": segments})["segments"]
 
     lines = []
@@ -130,6 +218,7 @@ def transcribe_and_diarize(
         else:
             lines.append(f"{ts} – {text}")
     return "\n".join(lines)
+
 
 def generate_meeting_minutes(transcribed_text: str, style: str = "default") -> str:
     model = genai.GenerativeModel("gemini-2.0-flash")
