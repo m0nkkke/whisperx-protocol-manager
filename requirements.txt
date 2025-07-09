@@ -12,4 +12,6 @@ python-multipart
 uvicorn
 dotenv
 pydub
-#google-generativeai -- протоколирование через Gemini (Ai studio lab)
+scipy
+google-generativeai
+google.api_core
